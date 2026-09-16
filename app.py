@@ -63,8 +63,25 @@ def calcular_eta(lat_origen, lon_origen, lat_destino, lon_destino, u_viento, v_v
     return f"Llegará en **{minutos:.0f} minutos** (Distancia: {distancia_m/1000:.1f} km | Vel. acercamiento: {vel_acercamiento:.1f} m/s)"
 
 # ==========================================
-# 2. INTEGRACIÓN APIS (Open-Meteo y AEMET)
+# 2. INTEGRACIÓN APIS
 # ==========================================
+
+def buscar_ciudad(nombre_ciudad):
+    """Convierte el nombre de una ciudad en coordenadas usando Open-Meteo Geocoding."""
+    url = "https://geocoding-api.open-meteo.com/v1/search"
+    params = {"name": nombre_ciudad, "count": 1, "language": "es", "format": "json"}
+    try:
+        res = requests.get(url, params=params).json()
+        if "results" in res and len(res["results"]) > 0:
+            info = res["results"][0]
+            region = info.get('admin1', '')
+            pais = info.get('country', '')
+            texto_lugar = f"{info['name']} ({region}, {pais})" if region else f"{info['name']} ({pais})"
+            return info["latitude"], info["longitude"], texto_lugar
+        else:
+            return None, None, "Ciudad no encontrada."
+    except Exception as e:
+        return None, None, f"Error: {e}"
 
 def actualizar_vientos_api(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=wind_speed_10m,wind_direction_10m,wind_speed_850hPa,wind_direction_850hPa,wind_speed_700hPa,wind_direction_700hPa,wind_speed_500hPa,wind_direction_500hPa&wind_speed_unit=ms"
@@ -99,7 +116,6 @@ def encontrar_radar_cercano(lat, lon):
     }
     distancia_minima = float('inf')
     radar_elegido = 'va'
-    
     for codigo, coords in radares.items():
         dist = math.hypot(lat - coords[0], lon - coords[1])
         if dist < distancia_minima:
@@ -153,31 +169,49 @@ def descargar_y_procesar_aemet(api_key, lat, lon):
 st.set_page_config(page_title="Radar Nowcasting", layout="wide")
 st.title("⛈️ Predictor de Impacto de Precipitación")
 
+# Inicialización de variables de estado (memoria de la app)
 default_vars = {
     'u_850': 12.0, 'v_850': 5.0, 'u_700': 15.0, 'v_700': 8.0, 'u_500': 20.0, 'v_500': 12.0,
-    'cizalladura': 25.0, 'u_shr': 18.0, 'v_shr': 10.0
+    'cizalladura': 25.0, 'u_shr': 18.0, 'v_shr': 10.0,
+    'lat_destino': 39.47, 'lon_destino': -0.37, 'nombre_lugar': 'Valencia (Comunidad Valenciana, Spain)'
 }
 for k, v in default_vars.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # --- BARRA LATERAL ---
-st.sidebar.header("1. Tu Ubicación y API")
-lat_destino = st.sidebar.number_input("Latitud", value=39.47)
-lon_destino = st.sidebar.number_input("Longitud", value=-0.37)
+st.sidebar.header("1. Tu Ubicación")
 
-# Tu clave API integrada por defecto
+# Nuevo buscador de ciudades
+ciudad_input = st.sidebar.text_input("Busca tu ciudad (ej. Valencia, Pulpí):", placeholder="Escribe aquí...")
+if st.sidebar.button("🔍 Buscar Ciudad", use_container_width=True):
+    if ciudad_input:
+        lat, lon, nombre_completo = buscar_ciudad(ciudad_input)
+        if lat is not None:
+            st.session_state['lat_destino'] = lat
+            st.session_state['lon_destino'] = lon
+            st.session_state['nombre_lugar'] = nombre_completo
+            st.sidebar.success(f"Ubicación fijada: {nombre_completo}")
+        else:
+            st.sidebar.error("Ciudad no encontrada. Prueba con otro nombre.")
+
+# Mostramos la ubicación seleccionada
+lat_destino = st.session_state['lat_destino']
+lon_destino = st.session_state['lon_destino']
+st.sidebar.info(f"📍 **{st.session_state['nombre_lugar']}**\n\nLat: {lat_destino:.4f} | Lon: {lon_destino:.4f}")
+
+st.sidebar.header("2. Clave AEMET")
 api_key_aemet = st.sidebar.text_input(
-    "API Key de AEMET", 
+    "API Key", 
     type="password",
     value="eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhem90ZWd1aW4xMUBnbWFpbC5jb20iLCJqdGkiOiIwYTRhN2Y5Ny03YTllLTQ2OTMtODhkOS0xMTkxNThmNjYyMDkiLCJleHAiOjE3OTc2Njc2MzAsImlzcyI6IkFFTUVUIiwiaWF0IjoxNzg5MDI3NjMwLCJ1c2VySWQiOiIwYTRhN2Y5Ny03YTllLTQ2OTMtODhkOS0xMTkxNThmNjYyMDkiLCJyb2xlIjoiIn0.dKqLEMMp01OKejW3viBJVzTSIXl5UGlG5FzTYUTHJV4"
 )
 
-st.sidebar.header("2. Aerograma Atmosférico")
-if st.sidebar.button("🌐 Auto-completar Viento (Open-Meteo)", type="primary"):
+st.sidebar.header("3. Aerograma Atmosférico")
+if st.sidebar.button("🌐 Auto-completar Viento", type="primary", use_container_width=True):
     with st.spinner("Descargando ECMWF..."):
         if actualizar_vientos_api(lat_destino, lon_destino):
-            st.sidebar.success("¡Datos actualizados!")
+            st.sidebar.success("¡Datos de viento actualizados!")
 
 col1, col2 = st.sidebar.columns(2)
 u_850 = col1.number_input("U 850hPa", key='u_850', format="%.2f")
@@ -190,7 +224,7 @@ cizalladura = st.sidebar.number_input("|V_shear| 0-6km", key='cizalladura', form
 u_shr = col1.number_input("U Shear", key='u_shr', format="%.2f")
 v_shr = col2.number_input("V Shear", key='v_shr', format="%.2f")
 
-st.sidebar.header("3. Horizonte")
+st.sidebar.header("4. Horizonte")
 tau = st.sidebar.slider("Proyectar al futuro (minutos)", 5, 120, 30, step=5)
 
 # --- ZONA PRINCIPAL ---
