@@ -107,20 +107,34 @@ def actualizar_vientos_api(lat, lon):
         return False
 
 def encontrar_radar_cercano(lat, lon):
+    # Red completa de los 15 radares de AEMET
     radares = {
-        'va': (39.16, -0.25), # Valencia
-        'am': (36.83, -2.67), # Almería
-        'mu': (38.26, -1.18), # Murcia
-        'ma': (40.17, -3.71), # Madrid
-        'ba': (41.40, 1.88)   # Barcelona
+        'am': (36.83, -2.67),  # Almería (Cubre Almería, Granada, sur de Murcia)
+        'as': (43.53, -6.23),  # Asturias (Cubre Asturias y norte de León)
+        'ba': (41.40, 1.88),   # Barcelona (Cubre Cataluña)
+        'cc': (39.43, -6.28),  # Cáceres (Cubre Extremadura)
+        'co': (43.16, -8.53),  # A Coruña (Cubre Galicia)
+        'ma': (40.17, -3.71),  # Madrid (Cubre zona centro)
+        'ml': (36.61, -4.70),  # Málaga (Cubre Málaga, sur de Córdoba/Sevilla)
+        'mu': (38.26, -1.18),  # Murcia (Cubre Murcia, Alicante, este de Albacete)
+        'pa': (42.01, -4.60),  # Palencia (Cubre Castilla y León norte)
+        'pm': (39.42, 2.74),   # Palma de Mallorca (Cubre Illes Balears)
+        'ca': (27.98, -15.60), # Gran Canaria (Cubre Islas Canarias)
+        'sa': (41.01, -6.59),  # Salamanca (Cubre Castilla y León sur)
+        'se': (37.76, -6.13),  # Sevilla (Cubre Andalucía occidental)
+        'va': (39.16, -0.25),  # Valencia (Cubre Valencia, Castellón, Teruel)
+        'za': (41.73, -0.56)   # Zaragoza (Cubre Aragón, Navarra, La Rioja)
     }
     distancia_minima = float('inf')
     radar_elegido = 'va'
+    
     for codigo, coords in radares.items():
+        # Cálculo de distancia euclidiana para encontrar la antena más cercana
         dist = math.hypot(lat - coords[0], lon - coords[1])
         if dist < distancia_minima:
             distancia_minima = dist
             radar_elegido = codigo
+            
     return radar_elegido
 
 def descargar_y_procesar_aemet(api_key, lat, lon):
