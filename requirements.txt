@@ -1,0 +1,7 @@
+streamlit
+numpy
+opencv-python-headless
+scipy
+xarray
+netCDF4
+requests
