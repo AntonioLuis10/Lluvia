@@ -5,3 +5,4 @@ scipy
 xarray
 netCDF4
 requests
+h5py
