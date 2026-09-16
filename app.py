@@ -250,9 +250,13 @@ metodo_datos = st.radio("Elige la fuente de datos:", [
 ])
 
 uploaded_file = None
-if metodo_datos == "Subir archivo NetCDF real (.nc) manual":
-    uploaded_file = st.file_uploader("Sube el volumen", type=["nc"])
-    var_name = st.text_input("Variable (ej. reflectivity)", value="reflectivity")
+if metodo_datos == "Usar datos de prueba sintéticos" or (metodo_datos == "Subir archivo NetCDF real (.nc) manual" and uploaded_file is None):
+            # Generamos una tormenta celular perfecta (Campana de Gauss 2D)
+            x, y = np.mgrid[-75:75, -75:75]
+            radio = np.sqrt(x**2 + y**2)
+            radar_tminus1 = 50.0 * np.exp(-(radio**2) / (15**2)) 
+            radar_t0 = np.roll(radar_tminus1, shift=3, axis=1) 
+            radar_t0 = np.clip(radar_t0, 0, 55)
 
 if st.button("Ejecutar Nowcasting", type="primary", use_container_width=True):
     with st.spinner("Procesando física de fluidos..."):
