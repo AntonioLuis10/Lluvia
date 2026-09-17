@@ -316,12 +316,33 @@ if st.button("Ejecutar Nowcasting", type="primary", use_container_width=True):
         radar_extrapolado = adveccion_retrograda(radar_t0, u_eff, v_eff, dt_segundos=tau*60.0)
         eta_msg = calcular_eta(lat_tormenta, lon_tormenta, lat_destino, lon_destino, u_env, v_env)
 
-        # --- RESULTADOS ---
+        # --- GUARDAR EN MEMORIA PARA EL SLIDER ---
         st.success("Cálculos finalizados.")
-        st.write("### ⏱️ Impacto Estimado (ETA)")
-        st.markdown(f"> {eta_msg}")
-        
-        st.write(f"### Mapa de Lluvia (Proyección a +{tau} min)")
-        img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
-        st.image(img_color, use_container_width=True, channels="BGR")
+        st.session_state['radar_t0'] = radar_t0
+        st.session_state['u_eff'] = u_eff
+        st.session_state['v_eff'] = v_eff
+        st.session_state['eta_msg'] = eta_msg
+
+# ==========================================
+# 4. VISUALIZACIÓN INTERACTIVA
+# ==========================================
+if 'radar_t0' in st.session_state:
+    st.write("### ⏱️ Impacto Estimado (ETA)")
+    st.markdown(f"> {st.session_state['eta_msg']}")
+    
+    st.write("### 🌩️ Evolución de la Tormenta")
+    # Este es el slider que estabas buscando
+    minuto_futuro = st.slider("Desliza para avanzar en el tiempo (minutos):", 0, 120, 0, step=5)
+    
+    # Advección instantánea basada en el slider
+    radar_extrapolado = adveccion_retrograda(
+        st.session_state['radar_t0'], 
+        st.session_state['u_eff'], 
+        st.session_state['v_eff'], 
+        dt_segundos=minuto_futuro * 60.0
+    )
+    
+    # Colorear y mostrar
+    img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
+    st.image(img_color, use_container_width=True, channels="BGR")
