@@ -345,4 +345,4 @@ if 'radar_t0' in st.session_state:
     # Colorear y mostrar
     img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
-    st.image(img_color, width=600, channels="BGR")
+    st.image(img_color, use_container_width=True, channels="BGR")
