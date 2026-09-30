@@ -148,32 +148,32 @@ def descargar_y_procesar_aemet(api_key, lat, lon):
         sat = hsv[:, :, 1]
         val = hsv[:, :, 2]
         
-        b = img_bgr[:, :, 0].astype(np.int16)
-        g = img_bgr[:, :, 1].astype(np.int16)
-        r = img_bgr[:, :, 2].astype(np.int16)
+        # 1. Filtro bruto: colores brillantes y saturados (mezcla lluvia y fronteras)
+        es_lluvia_bruta = ((sat > 50) & (val > 50)).astype(np.uint8)
         
-        # Filtro estricto: Todo el azul puro de AEMET (Lluvia) o alta saturación
-        es_lluvia = ((sat > 80) & (val > 80)) & ~((r > 50) & (r < 180) & (g < 50) & (b < 50))
+        # 2. MAGIA MORFOLÓGICA: Borramos las líneas finas (costas y provincias) 
+        # usando una "Apertura". Solo sobreviven las manchas gruesas de tormenta.
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        es_lluvia_limpia = cv2.morphologyEx(es_lluvia_bruta, cv2.MORPH_OPEN, kernel)
         
-        # Máscara Circular (Solo procesamos dentro del alcance útil del radar)
-        # Suponiendo imagen de 480x480, centro en (240, 240) y radio de 225
+        # 3. Máscara circular (cortamos todo lo que caiga fuera del alcance del radar)
         y, x = np.ogrid[:img_bgr.shape[0], :img_bgr.shape[1]]
-        centro_y, centro_x = img_bgr.shape[0]//2, img_bgr.shape[1]//2
-        radio_maximo = min(centro_x, centro_y) - 15 
-        dist_al_centro = np.sqrt((x - centro_x)**2 + (y - centro_y)**2)
-        mascara_circular = dist_al_centro <= radio_maximo
+        cy, cx = img_bgr.shape[0]//2, img_bgr.shape[1]//2
+        rmax = min(cx, cy) - 15 
+        mascara_circular = np.sqrt((x - cx)**2 + (y - cy)**2) <= rmax
         
-        # Aplicamos máscara doble: Solo colores de lluvia DENTRO del círculo
-        mascara_final = es_lluvia & mascara_circular
+        # Unimos las condiciones
+        mascara_final = (es_lluvia_limpia > 0) & mascara_circular
+        mascara_final[:40, :] = False  # Proteger logo AEMET
+        mascara_final[-80:, :] = False # Proteger barra de decibelios
         
         reflectividad = np.zeros(sat.shape, dtype=np.float32)
         reflectividad[mascara_final] = (val[mascara_final] / 255.0) * 60.0
         
-        # Fondo limpio (Solo el mapa, sin rastro de la lluvia vieja)
         mapa_limpio = img_bgr.copy()
         mapa_limpio[mascara_final] = [0, 0, 0] 
         
-        return reflectividad, mapa_limpio, f"Radar '{codigo_radar}' descargado y calibrado con éxito."
+        return reflectividad, mapa_limpio, f"Radar '{codigo_radar}' descargado con éxito."
         
     except Exception as e:
         return None, None, f"Error procesando AEMET: {str(e)}"
@@ -268,7 +268,7 @@ if st.button("Ejecutar Nowcasting", type="primary", use_container_width=True):
         st.session_state['eta_msg'] = eta_msg
 
 # ==========================================
-# 4. VISUALIZACIÓN INTERACTIVA Y ANIMACIÓN
+# 4. VISUALIZACIÓN INTERACTIVA
 # ==========================================
 if 'radar_t0' in st.session_state:
     st.write("### ⏱️ Impacto Estimado (ETA)")
@@ -276,60 +276,68 @@ if 'radar_t0' in st.session_state:
     
     st.write("### 🌩️ Evolución de la Tormenta")
     
+    # Inicializar variables del reproductor en memoria
+    if 'anim_slider' not in st.session_state:
+        st.session_state['anim_slider'] = 0
+    if 'playing' not in st.session_state:
+        st.session_state['playing'] = False
+
     # Controles de la interfaz
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        minuto_futuro = st.slider("Control manual (minutos):", 0, 120, 0, step=5)
+        # Al asociar el slider al "key", se moverá solo cuando cambie la memoria
+        st.slider("Minuto de proyección:", 0, 120, step=5, key='anim_slider')
     with col2:
-        velocidad = st.selectbox("Velocidad de animación:", ["Lenta", "Normal", "Rápida"], index=1)
+        velocidad = st.selectbox("Velocidad:", ["Lenta", "Normal", "Rápida"], index=1)
     with col3:
-        st.write("") # Espaciador para alinear el botón
-        animar = st.button("▶️ Reproducir / Animar", use_container_width=True)
-    
-    # El "lienzo" vacío donde pintaremos los fotogramas
-    marco_imagen = st.empty()
-    
-    # Función que renderiza un fotograma exacto (reutilizable)
-    def renderizar_fotograma(minutos):
-        radar_extrapolado = adveccion_retrograda(
-            st.session_state['radar_t0'], 
-            st.session_state['u_eff'], 
-            st.session_state['v_eff'], 
-            dt_segundos=minutos * 60.0
-        )
-        
-        if st.session_state.get('mapa_fondo') is not None:
-            mapa_base = st.session_state['mapa_fondo'].copy()
-            y, x = np.ogrid[:mapa_base.shape[0], :mapa_base.shape[1]]
-            cy, cx = mapa_base.shape[0]//2, mapa_base.shape[1]//2
-            rmax = min(cx, cy) - 15
-            en_circulo = np.sqrt((x - cx)**2 + (y - cy)**2) <= rmax
-            
-            mascara_nueva = (radar_extrapolado > 5.0) & en_circulo
-            img_lluvia = np.clip((radar_extrapolado / 60.0) * 255, 0, 255).astype(np.uint8)
-            img_color = cv2.applyColorMap(img_lluvia, cv2.COLORMAP_JET)
-            
-            mapa_base[mascara_nueva] = img_color[mascara_nueva]
-            return mapa_base
+        st.write("") # Espaciador para centrar el botón
+        if st.session_state['playing']:
+            if st.button("⏸️ Pausar", use_container_width=True):
+                st.session_state['playing'] = False
+                st.rerun() # Recarga la web inmediatamente para pausar
         else:
-            img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-            return cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
+            if st.button("▶️ Reproducir", use_container_width=True):
+                if st.session_state['anim_slider'] >= 120:
+                    st.session_state['anim_slider'] = 0
+                st.session_state['playing'] = True
+                st.rerun()
 
-    # Lógica del reproductor
-    if animar:
-        # Asignamos los tiempos de pausa según la elección
-        tiempos_pausa = {"Lenta": 0.8, "Normal": 0.3, "Rápida": 0.05}
-        retardo = tiempos_pausa[velocidad]
+    # RENDERIZADO DEL MAPA EN EL MINUTO ACTUAL DEL SLIDER
+    radar_extrapolado = adveccion_retrograda(
+        st.session_state['radar_t0'], 
+        st.session_state['u_eff'], 
+        st.session_state['v_eff'], 
+        dt_segundos=st.session_state['anim_slider'] * 60.0
+    )
+    
+    if st.session_state.get('mapa_fondo') is not None:
+        mapa_base = st.session_state['mapa_fondo'].copy()
+        y, x = np.ogrid[:mapa_base.shape[0], :mapa_base.shape[1]]
+        cy, cx = mapa_base.shape[0]//2, mapa_base.shape[1]//2
+        en_circulo = np.sqrt((x - cx)**2 + (y - cy)**2) <= (min(cx, cy) - 15)
         
-        # Bucle de animación (de 0 a 120 en saltos de 5)
-        for t in range(0, 125, 5):
-            img_frame = renderizar_fotograma(t)
-            # Sobreescribimos el mismo marco de imagen
-            marco_imagen.image(img_frame, width=700, channels="BGR", caption=f"Animación en curso: +{t} minutos")
-            time.sleep(retardo) # Espera antes del siguiente fotograma
-            
-        st.success("Animación finalizada.")
+        mascara_nueva = (radar_extrapolado > 5.0) & en_circulo
+        img_lluvia_gris = np.clip((radar_extrapolado / 60.0) * 255, 0, 255).astype(np.uint8)
+        img_color = cv2.applyColorMap(img_lluvia_gris, cv2.COLORMAP_JET)
+        
+        mapa_base[mascara_nueva] = img_color[mascara_nueva]
+        st.image(mapa_base, width=700, channels="BGR")
     else:
-        # Modo estático (responde al slider manual)
-        img_frame = renderizar_fotograma(minuto_futuro)
-        marco_imagen.image(img_frame, width=700, channels="BGR", caption=f"Proyección estática a +{minuto_futuro} minutos")
+        img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
+        st.image(img_color, width=700, channels="BGR")
+
+    # LÓGICA DE AVANCE AUTOMÁTICO (MOTOR DE ANIMACIÓN)
+    if st.session_state['playing']:
+        import time
+        tiempos = {"Lenta": 0.8, "Normal": 0.3, "Rápida": 0.05}
+        time.sleep(tiempos[velocidad]) # Espera los milisegundos elegidos
+        
+        next_t = st.session_state['anim_slider'] + 5
+        if next_t > 120:
+            st.session_state['playing'] = False # Si llega al final, se pausa solo
+        else:
+            st.session_state['anim_slider'] = next_t
+        
+        # Fuerzo a Streamlit a recargarse para pintar el siguiente fotograma
+        st.rerun()
