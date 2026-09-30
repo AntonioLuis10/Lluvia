@@ -58,7 +58,7 @@ def calcular_eta(lat_origen, lon_origen, lat_destino, lon_destino, u_viento, v_v
     angulo_cartesiano = (math.pi / 2.0) - azimut_rad
     vel_acercamiento = (u_viento * math.cos(angulo_cartesiano)) + (v_viento * math.sin(angulo_cartesiano))
     if vel_acercamiento <= 0:
-        return f"Distancia: {distancia_m/1000:.1f} km. La tormenta no se dirige a tu ubicación."
+        return f"Distancia: {distancia_m/1000:.1f} km. Tormenta en desvío."
     minutos = (distancia_m / vel_acercamiento) / 60.0
     return f"Llegará en **{minutos:.0f} minutos** (Distancia: {distancia_m/1000:.1f} km | Vel. acercamiento: {vel_acercamiento:.1f} m/s)"
 
@@ -67,7 +67,6 @@ def calcular_eta(lat_origen, lon_origen, lat_destino, lon_destino, u_viento, v_v
 # ==========================================
 
 def buscar_ciudad(nombre_ciudad):
-    """Convierte el nombre de una ciudad en coordenadas usando Open-Meteo Geocoding."""
     url = "https://geocoding-api.open-meteo.com/v1/search"
     params = {"name": nombre_ciudad, "count": 1, "language": "es", "format": "json"}
     try:
@@ -107,34 +106,20 @@ def actualizar_vientos_api(lat, lon):
         return False
 
 def encontrar_radar_cercano(lat, lon):
-    # Red completa de los 15 radares de AEMET
     radares = {
-        'am': (36.83, -2.67),  # Almería (Cubre Almería, Granada, sur de Murcia)
-        'as': (43.53, -6.23),  # Asturias (Cubre Asturias y norte de León)
-        'ba': (41.40, 1.88),   # Barcelona (Cubre Cataluña)
-        'cc': (39.43, -6.28),  # Cáceres (Cubre Extremadura)
-        'co': (43.16, -8.53),  # A Coruña (Cubre Galicia)
-        'ma': (40.17, -3.71),  # Madrid (Cubre zona centro)
-        'ml': (36.61, -4.70),  # Málaga (Cubre Málaga, sur de Córdoba/Sevilla)
-        'mu': (38.26, -1.18),  # Murcia (Cubre Murcia, Alicante, este de Albacete)
-        'pa': (42.01, -4.60),  # Palencia (Cubre Castilla y León norte)
-        'pm': (39.42, 2.74),   # Palma de Mallorca (Cubre Illes Balears)
-        'ca': (27.98, -15.60), # Gran Canaria (Cubre Islas Canarias)
-        'sa': (41.01, -6.59),  # Salamanca (Cubre Castilla y León sur)
-        'se': (37.76, -6.13),  # Sevilla (Cubre Andalucía occidental)
-        'va': (39.16, -0.25),  # Valencia (Cubre Valencia, Castellón, Teruel)
-        'za': (41.73, -0.56)   # Zaragoza (Cubre Aragón, Navarra, La Rioja)
+        'am': (36.83, -2.67), 'as': (43.53, -6.23), 'ba': (41.40, 1.88),
+        'cc': (39.43, -6.28), 'co': (43.16, -8.53), 'ma': (40.17, -3.71),
+        'ml': (36.61, -4.70), 'mu': (38.26, -1.18), 'pa': (42.01, -4.60),
+        'pm': (39.42, 2.74),  'ca': (27.98, -15.60),'sa': (41.01, -6.59),
+        'se': (37.76, -6.13), 'va': (39.16, -0.25), 'za': (41.73, -0.56)
     }
     distancia_minima = float('inf')
     radar_elegido = 'va'
-    
     for codigo, coords in radares.items():
-        # Cálculo de distancia euclidiana para encontrar la antena más cercana
         dist = math.hypot(lat - coords[0], lon - coords[1])
         if dist < distancia_minima:
             distancia_minima = dist
             radar_elegido = codigo
-            
     return radar_elegido
 
 def descargar_y_procesar_aemet(api_key, lat, lon):
@@ -145,36 +130,35 @@ def descargar_y_procesar_aemet(api_key, lat, lon):
     try:
         respuesta = requests.get(url_peticion, headers=headers, params={"api_key": api_key})
         if respuesta.status_code != 200:
-            return None, f"Error AEMET: {respuesta.status_code}"
+            return None, None, f"Error AEMET: {respuesta.status_code}"
             
         url_datos = respuesta.json().get("datos")
         if not url_datos:
-            return None, "Radar sin enlace de datos activo."
+            return None, None, "Radar sin enlace activo."
             
         req_img = requests.get(url_datos)
         img_array = np.asarray(bytearray(req_img.content), dtype=np.uint8)
         img_bgr = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         
         if img_bgr is None:
-            return None, "No se pudo decodificar el formato de imagen del radar."
+            return None, None, "No se pudo decodificar la imagen."
             
-        # Convertimos a espacio de color HSV para aislar ecos de reflectividad real
-        # y mapeamos la saturación/brillo a una matriz escalar de intensidad (0 a 60 dBZ)
+        # MAGIA VISUAL: Extraemos la lluvia y separamos el fondo azul
         hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        hue = hsv[:, :, 0]
         sat = hsv[:, :, 1]
         val = hsv[:, :, 2]
         
-        # Filtro de ecos: excluimos fondo blanco/grisáceo y mapa base
-        mascara_lluvia = (sat > 50) & (val > 50)
+        # Filtramos estrictamente los colores de lluvia (descartando el azul de fondo y bordes grises)
+        mascara_lluvia = ((hue < 90) | (hue > 140)) & (sat > 80) & (val > 80)
         
-        # Estimación de dBZ según brillo y saturación relativa de los ecos
         reflectividad = np.zeros(sat.shape, dtype=np.float32)
-        reflectividad[mascara_lluvia] = (val[mascara_lluvia] / 255.0) * 65.0
+        reflectividad[mascara_lluvia] = (val[mascara_lluvia] / 255.0) * 55.0
         
-        return reflectividad, f"Radar '{codigo_radar}' descargado y calibrado con éxito."
+        return reflectividad, img_bgr, f"Radar '{codigo_radar}' descargado y calibrado con éxito."
         
     except Exception as e:
-        return None, f"Error procesando AEMET: {str(e)}"
+        return None, None, f"Error procesando AEMET: {str(e)}"
 
 # ==========================================
 # 3. INTERFAZ WEB (STREAMLIT)
@@ -183,49 +167,33 @@ def descargar_y_procesar_aemet(api_key, lat, lon):
 st.set_page_config(page_title="Radar Nowcasting", layout="wide")
 st.title("⛈️ Predictor de Impacto de Precipitación")
 
-# Inicialización de variables de estado (memoria de la app)
 default_vars = {
     'u_850': 12.0, 'v_850': 5.0, 'u_700': 15.0, 'v_700': 8.0, 'u_500': 20.0, 'v_500': 12.0,
     'cizalladura': 25.0, 'u_shr': 18.0, 'v_shr': 10.0,
-    'lat_destino': 39.47, 'lon_destino': -0.37, 'nombre_lugar': 'Valencia (Comunidad Valenciana, Spain)'
+    'lat_destino': 39.47, 'lon_destino': -0.37, 'nombre_lugar': 'Valencia'
 }
 for k, v in default_vars.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# --- BARRA LATERAL ---
 st.sidebar.header("1. Tu Ubicación")
-
-# Nuevo buscador de ciudades
-ciudad_input = st.sidebar.text_input("Busca tu ciudad (ej. Valencia, Pulpí):", placeholder="Escribe aquí...")
+ciudad_input = st.sidebar.text_input("Busca tu ciudad:", placeholder="ej. Valencia, Pulpí")
 if st.sidebar.button("🔍 Buscar Ciudad", use_container_width=True):
     if ciudad_input:
         lat, lon, nombre_completo = buscar_ciudad(ciudad_input)
         if lat is not None:
-            st.session_state['lat_destino'] = lat
-            st.session_state['lon_destino'] = lon
-            st.session_state['nombre_lugar'] = nombre_completo
+            st.session_state['lat_destino'], st.session_state['lon_destino'], st.session_state['nombre_lugar'] = lat, lon, nombre_completo
             st.sidebar.success(f"Ubicación fijada: {nombre_completo}")
-        else:
-            st.sidebar.error("Ciudad no encontrada. Prueba con otro nombre.")
 
-# Mostramos la ubicación seleccionada
-lat_destino = st.session_state['lat_destino']
-lon_destino = st.session_state['lon_destino']
+lat_destino, lon_destino = st.session_state['lat_destino'], st.session_state['lon_destino']
 st.sidebar.info(f"📍 **{st.session_state['nombre_lugar']}**\n\nLat: {lat_destino:.4f} | Lon: {lon_destino:.4f}")
 
 st.sidebar.header("2. Clave AEMET")
-api_key_aemet = st.sidebar.text_input(
-    "API Key", 
-    type="password",
-    value="eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhem90ZWd1aW4xMUBnbWFpbC5jb20iLCJqdGkiOiIwYTRhN2Y5Ny03YTllLTQ2OTMtODhkOS0xMTkxNThmNjYyMDkiLCJleHAiOjE3OTc2Njc2MzAsImlzcyI6IkFFTUVUIiwiaWF0IjoxNzg5MDI3NjMwLCJ1c2VySWQiOiIwYTRhN2Y5Ny03YTllLTQ2OTMtODhkOS0xMTkxNThmNjYyMDkiLCJyb2xlIjoiIn0.dKqLEMMp01OKejW3viBJVzTSIXl5UGlG5FzTYUTHJV4"
-)
+api_key_aemet = st.sidebar.text_input("API Key", type="password", value="eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhem90ZWd1aW4xMUBnbWFpbC5jb20iLCJqdGkiOiIwYTRhN2Y5Ny03YTllLTQ2OTMtODhkOS0xMTkxNThmNjYyMDkiLCJleHAiOjE3OTc2Njc2MzAsImlzcyI6IkFFTUVUIiwiaWF0IjoxNzg5MDI3NjMwLCJ1c2VySWQiOiIwYTRhN2Y5Ny03YTllLTQ2OTMtODhkOS0xMTkxNThmNjYyMDkiLCJyb2xlIjoiIn0.dKqLEMMp01OKejW3viBJVzTSIXl5UGlG5FzTYUTHJV4")
 
 st.sidebar.header("3. Aerograma Atmosférico")
 if st.sidebar.button("🌐 Auto-completar Viento", type="primary", use_container_width=True):
-    with st.spinner("Descargando ECMWF..."):
-        if actualizar_vientos_api(lat_destino, lon_destino):
-            st.sidebar.success("¡Datos de viento actualizados!")
+    actualizar_vientos_api(lat_destino, lon_destino)
 
 col1, col2 = st.sidebar.columns(2)
 u_850 = col1.number_input("U 850hPa", key='u_850', format="%.2f")
@@ -234,90 +202,48 @@ u_700 = col1.number_input("U 700hPa", key='u_700', format="%.2f")
 v_700 = col2.number_input("V 700hPa", key='v_700', format="%.2f")
 u_500 = col1.number_input("U 500hPa", key='u_500', format="%.2f")
 v_500 = col2.number_input("V 500hPa", key='v_500', format="%.2f")
-cizalladura = st.sidebar.number_input("|V_shear| 0-6km", key='cizalladura', format="%.2f")
+cizalladura = st.sidebar.number_input("|V_shear|", key='cizalladura', format="%.2f")
 u_shr = col1.number_input("U Shear", key='u_shr', format="%.2f")
 v_shr = col2.number_input("V Shear", key='v_shr', format="%.2f")
 
-st.sidebar.header("4. Horizonte")
-tau = st.sidebar.slider("Proyectar al futuro (minutos)", 5, 120, 30, step=5)
-
-# --- ZONA PRINCIPAL ---
 st.write("### Fuente de Datos del Radar")
-metodo_datos = st.radio("Elige la fuente de datos:", [
-    "Descarga Automática de AEMET",
-    "Usar datos de prueba sintéticos", 
-    "Subir archivo NetCDF real (.nc) manual"
-])
-
-uploaded_file = None
-if metodo_datos == "Usar datos de prueba sintéticos" or (metodo_datos == "Subir archivo NetCDF real (.nc) manual" and uploaded_file is None):
-            # Generamos una tormenta celular perfecta (Campana de Gauss 2D)
-            x, y = np.mgrid[-75:75, -75:75]
-            radio = np.sqrt(x**2 + y**2)
-            radar_tminus1 = 50.0 * np.exp(-(radio**2) / (15**2)) 
-            radar_t0 = np.roll(radar_tminus1, shift=3, axis=1) 
-            radar_t0 = np.clip(radar_t0, 0, 55)
+metodo_datos = st.radio("Elige la fuente de datos:", ["Descarga Automática de AEMET", "Usar datos de prueba sintéticos"])
 
 if st.button("Ejecutar Nowcasting", type="primary", use_container_width=True):
     with st.spinner("Procesando física de fluidos..."):
-        
-        # --- CARGA DE DATOS ---
         lat_tormenta, lon_tormenta = lat_destino - 0.5, lon_destino - 0.5 
         
         if metodo_datos == "Descarga Automática de AEMET":
-            if not api_key_aemet:
-                st.error("Falta la API Key.")
-                st.stop()
-                
-            st.info("Conectando con AEMET y extrayendo radar más cercano...")
-            lluvia_aemet, mensaje = descargar_y_procesar_aemet(api_key_aemet, lat_destino, lon_destino)
-            
+            lluvia_aemet, mapa_fondo, mensaje = descargar_y_procesar_aemet(api_key_aemet, lat_destino, lon_destino)
             if lluvia_aemet is not None:
                 st.success(mensaje)
                 radar_tminus1 = np.roll(lluvia_aemet, shift=-2, axis=1) 
                 radar_t0 = lluvia_aemet
+                st.session_state['mapa_fondo'] = mapa_fondo
                 lat_tormenta, lon_tormenta = lat_destino, lon_destino 
             else:
                 st.error(f"Fallo en descarga: {mensaje}. Se usarán datos sintéticos.")
                 metodo_datos = "Usar datos de prueba sintéticos"
 
-        if metodo_datos == "Usar datos de prueba sintéticos" or (metodo_datos == "Subir archivo NetCDF real (.nc) manual" and uploaded_file is None):
-            np.random.seed(42)
-            radar_tminus1 = np.random.normal(15, 20, (150, 150))
-            radar_t0 = np.roll(radar_tminus1, shift=3, axis=1) + np.random.normal(0, 2, (150, 150))
+        if metodo_datos == "Usar datos de prueba sintéticos":
+            x, y = np.mgrid[-75:75, -75:75]
+            radio = np.sqrt(x**2 + y**2)
+            radar_tminus1 = 50.0 * np.exp(-(radio**2) / (15**2)) 
+            radar_t0 = np.roll(radar_tminus1, shift=3, axis=1) 
             radar_t0 = np.clip(radar_t0, 0, 55)
-                
-        elif metodo_datos == "Subir archivo NetCDF real (.nc) manual" and uploaded_file is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.nc') as tmp_file:
-                tmp_file.write(uploaded_file.read())
-                tmp_path = tmp_file.name
-            try:
-                ds = xr.open_dataset(tmp_path)
-                lluvia = ds[var_name].values
-                radar_tminus1 = lluvia[-2, :, :] if len(lluvia) > 1 else lluvia[0, :, :]
-                radar_t0 = lluvia[-1, :, :]
-            except Exception as e:
-                st.error(f"Error procesando NetCDF: {e}")
-                st.stop()
-            finally:
-                os.remove(tmp_path)
+            st.session_state['mapa_fondo'] = None
 
-        # --- MOTOR FÍSICO ---
         u_guia, v_guia = calcular_viento_guia(u_850, v_850, u_700, v_700, u_500, v_500)
         u_env, v_env = vector_bunkers(u_guia, v_guia, u_shr, v_shr, cizalladura)
         
         u_radar, v_radar = calcular_flujo_optico_denso(radar_tminus1, radar_t0)
         u_eff, v_eff = fusion_espaciotemporal(
-            u_radar, v_radar, 
-            np.full(radar_t0.shape, u_env), np.full(radar_t0.shape, v_env), 
-            radar_t0, tau, tau_0=60.0
+            u_radar, v_radar, np.full(radar_t0.shape, u_env), np.full(radar_t0.shape, v_env), 
+            radar_t0, tau=30, tau_0=60.0
         )
         
-        radar_extrapolado = adveccion_retrograda(radar_t0, u_eff, v_eff, dt_segundos=tau*60.0)
         eta_msg = calcular_eta(lat_tormenta, lon_tormenta, lat_destino, lon_destino, u_env, v_env)
 
-        # --- GUARDAR EN MEMORIA PARA EL SLIDER ---
-        st.success("Cálculos finalizados.")
         st.session_state['radar_t0'] = radar_t0
         st.session_state['u_eff'] = u_eff
         st.session_state['v_eff'] = v_eff
@@ -331,10 +257,8 @@ if 'radar_t0' in st.session_state:
     st.markdown(f"> {st.session_state['eta_msg']}")
     
     st.write("### 🌩️ Evolución de la Tormenta")
-    # Este es el slider que estabas buscando
     minuto_futuro = st.slider("Desliza para avanzar en el tiempo (minutos):", 0, 120, 0, step=5)
     
-    # Advección instantánea basada en el slider
     radar_extrapolado = adveccion_retrograda(
         st.session_state['radar_t0'], 
         st.session_state['u_eff'], 
@@ -342,7 +266,17 @@ if 'radar_t0' in st.session_state:
         dt_segundos=minuto_futuro * 60.0
     )
     
-    # Colorear y mostrar
-    img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
-    st.image(img_color, use_container_width=True, channels="BGR")
+    # Composición de imagen inteligente
+    if st.session_state.get('mapa_fondo') is not None:
+        mascara_nueva = radar_extrapolado > 1.0
+        img_lluvia = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        img_color = cv2.applyColorMap(img_lluvia, cv2.COLORMAP_JET)
+        
+        img_final = st.session_state['mapa_fondo'].copy()
+        img_final[mascara_nueva] = img_color[mascara_nueva]
+        
+        st.image(img_final, width=700, channels="BGR")
+    else:
+        img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
+        st.image(img_color, width=700, channels="BGR")
