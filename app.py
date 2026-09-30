@@ -147,18 +147,28 @@ def descargar_y_procesar_aemet(api_key, lat, lon):
         sat = hsv[:, :, 1]
         val = hsv[:, :, 2]
         
-        # EXTRACCIÓN LIMPIA: Cogemos colores brillantes y saturados (lluvia real)
-        # Ignoramos el rojo oscuro de las fronteras (val < 100) y el negro del fondo
-        mascara_lluvia = (sat > 100) & (val > 120)
+        b = img_bgr[:, :, 0].astype(np.int16)
+        g = img_bgr[:, :, 1].astype(np.int16)
+        r = img_bgr[:, :, 2].astype(np.int16)
+        
+        # EL TRUCO MAESTRO: Detectar el rojo oscuro de las fronteras de AEMET
+        es_borde_rojo = (r > 50) & (r < 180) & (g < 50) & (b < 50)
+        
+        # Solo cogemos la lluvia (alta saturación) EXCLUYENDO las fronteras
+        mascara_lluvia = (sat > 40) & (~es_borde_rojo)
+        
+        # BLINDAJE: Impedir que el viento mueva el logo (arriba) y la barra de colores (abajo)
+        mascara_lluvia[:40, :] = False
+        mascara_lluvia[-80:, :] = False
         
         reflectividad = np.zeros(sat.shape, dtype=np.float32)
         reflectividad[mascara_lluvia] = (val[mascara_lluvia] / 255.0) * 60.0
         
-        # CLAVE: Borramos la lluvia de la foto original para no crear "fantasmas"
+        # Creamos el lienzo de fondo con un "agujero negro" donde estaba la lluvia
         mapa_limpio = img_bgr.copy()
-        mapa_limpio[mascara_lluvia] = [0, 0, 0] # Pintamos el hueco de negro
+        mapa_limpio[mascara_lluvia] = [0, 0, 0] 
         
-        return reflectividad, mapa_limpio, f"Radar '{codigo_radar}' descargado y calibrado con éxito."
+        return reflectividad, mapa_limpio, f"Radar '{codigo_radar}' descargado con éxito."
         
     except Exception as e:
         return None, None, f"Error procesando AEMET: {str(e)}"
@@ -256,13 +266,12 @@ if st.button("Ejecutar Nowcasting", type="primary", use_container_width=True):
 # 4. VISUALIZACIÓN INTERACTIVA
 # ==========================================
 if 'radar_t0' in st.session_state:
-    st.write("### ⏱️️ Impacto Estimado (ETA)")
+    st.write("### ⏱️ Impacto Estimado (ETA)")
     st.markdown(f"> {st.session_state['eta_msg']}")
     
-    st.write("### 🌩️ Evolución de la Tormenta")
+    st.write("### 🌩️️ Evolución de la Tormenta")
     minuto_futuro = st.slider("Desliza para avanzar en el tiempo (minutos):", 0, 120, 0, step=5)
     
-    # 1. Movimiento puro de la lluvia
     radar_extrapolado = adveccion_retrograda(
         st.session_state['radar_t0'], 
         st.session_state['u_eff'], 
@@ -271,17 +280,16 @@ if 'radar_t0' in st.session_state:
     )
     
     if st.session_state.get('mapa_fondo') is not None:
-        # 2. Rescatamos el mapa donde HEMOS BORRADO la lluvia original
         mapa_base = st.session_state['mapa_fondo'].copy()
         
-        # 3. Solo dibujamos los píxeles donde haya una tormenta real (> 5 dBZ)
+        # Filtramos para pintar solo lluvia significativa (más de 5 dBZ)
         mascara_nueva = radar_extrapolado > 5.0
         
-        # 4. Damos color a la lluvia extrapolada
-        img_lluvia = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        # Forzamos la escala de 0 a 60 dBZ para que los colores coincidan con AEMET
+        img_lluvia = np.clip((radar_extrapolado / 60.0) * 255, 0, 255).astype(np.uint8)
         img_color = cv2.applyColorMap(img_lluvia, cv2.COLORMAP_JET)
         
-        # 5. Pegamos la lluvia nueva sobre el mapa base estático y limpio
+        # Pegar SOLO la lluvia movida encima de las fronteras (que ahora están fijas)
         mapa_base[mascara_nueva] = img_color[mascara_nueva]
         
         st.image(mapa_base, width=700, channels="BGR")
