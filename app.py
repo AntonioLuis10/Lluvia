@@ -58,7 +58,7 @@ def calcular_eta(lat_origen, lon_origen, lat_destino, lon_destino, u_viento, v_v
     angulo_cartesiano = (math.pi / 2.0) - azimut_rad
     vel_acercamiento = (u_viento * math.cos(angulo_cartesiano)) + (v_viento * math.sin(angulo_cartesiano))
     if vel_acercamiento <= 0:
-        return f"Distancia: {distancia_m/1000:.1f} km. Tormenta en desvío."
+        return f"Distancia: {distancia_m/1000:.1f} km. La tormenta no se dirige a tu ubicación."
     minutos = (distancia_m / vel_acercamiento) / 60.0
     return f"Llegará en **{minutos:.0f} minutos** (Distancia: {distancia_m/1000:.1f} km | Vel. acercamiento: {vel_acercamiento:.1f} m/s)"
 
@@ -143,19 +143,22 @@ def descargar_y_procesar_aemet(api_key, lat, lon):
         if img_bgr is None:
             return None, None, "No se pudo decodificar la imagen."
             
-        # MAGIA VISUAL: Extraemos la lluvia y separamos el fondo azul
         hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-        hue = hsv[:, :, 0]
         sat = hsv[:, :, 1]
         val = hsv[:, :, 2]
         
-        # Filtramos estrictamente los colores de lluvia (descartando el azul de fondo y bordes grises)
-        mascara_lluvia = ((hue < 90) | (hue > 140)) & (sat > 80) & (val > 80)
+        # EXTRACCIÓN LIMPIA: Cogemos colores brillantes y saturados (lluvia real)
+        # Ignoramos el rojo oscuro de las fronteras (val < 100) y el negro del fondo
+        mascara_lluvia = (sat > 100) & (val > 120)
         
         reflectividad = np.zeros(sat.shape, dtype=np.float32)
-        reflectividad[mascara_lluvia] = (val[mascara_lluvia] / 255.0) * 55.0
+        reflectividad[mascara_lluvia] = (val[mascara_lluvia] / 255.0) * 60.0
         
-        return reflectividad, img_bgr, f"Radar '{codigo_radar}' descargado y calibrado con éxito."
+        # CLAVE: Borramos la lluvia de la foto original para no crear "fantasmas"
+        mapa_limpio = img_bgr.copy()
+        mapa_limpio[mascara_lluvia] = [0, 0, 0] # Pintamos el hueco de negro
+        
+        return reflectividad, mapa_limpio, f"Radar '{codigo_radar}' descargado y calibrado con éxito."
         
     except Exception as e:
         return None, None, f"Error procesando AEMET: {str(e)}"
@@ -253,13 +256,13 @@ if st.button("Ejecutar Nowcasting", type="primary", use_container_width=True):
 # 4. VISUALIZACIÓN INTERACTIVA
 # ==========================================
 if 'radar_t0' in st.session_state:
-    st.write("### ⏱️ Impacto Estimado (ETA)")
+    st.write("### ⏱️️ Impacto Estimado (ETA)")
     st.markdown(f"> {st.session_state['eta_msg']}")
     
     st.write("### 🌩️ Evolución de la Tormenta")
     minuto_futuro = st.slider("Desliza para avanzar en el tiempo (minutos):", 0, 120, 0, step=5)
     
-    # 1. Movemos matemáticamente solo la matriz de valores de lluvia
+    # 1. Movimiento puro de la lluvia
     radar_extrapolado = adveccion_retrograda(
         st.session_state['radar_t0'], 
         st.session_state['u_eff'], 
@@ -268,24 +271,21 @@ if 'radar_t0' in st.session_state:
     )
     
     if st.session_state.get('mapa_fondo') is not None:
-        # 2. Rescatamos el mapa original estático (sin lluvia)
+        # 2. Rescatamos el mapa donde HEMOS BORRADO la lluvia original
         mapa_base = st.session_state['mapa_fondo'].copy()
         
-        # 3. Limpiamos las líneas rojas y letras movidas que se nos colaron antes
-        # Solo consideramos precipitación los píxeles con un valor real de lluvia (> 10 dBZ)
-        mascara_lluvia = radar_extrapolado > 10.0
+        # 3. Solo dibujamos los píxeles donde haya una tormenta real (> 5 dBZ)
+        mascara_nueva = radar_extrapolado > 5.0
         
-        # 4. Coloreamos solo esos píxeles de lluvia pura usando la escala JET
+        # 4. Damos color a la lluvia extrapolada
         img_lluvia = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         img_color = cv2.applyColorMap(img_lluvia, cv2.COLORMAP_JET)
         
-        # 5. Imprimimos la lluvia movida sobre el mapa base estático
-        # Solo sobreescribimos los píxeles donde la máscara indica que hay lluvia real
-        mapa_base[mascara_lluvia] = img_color[mascara_lluvia]
+        # 5. Pegamos la lluvia nueva sobre el mapa base estático y limpio
+        mapa_base[mascara_nueva] = img_color[mascara_nueva]
         
         st.image(mapa_base, width=700, channels="BGR")
     else:
-        # Fallback para datos sintéticos
         img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
         st.image(img_color, width=700, channels="BGR")
