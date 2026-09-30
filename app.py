@@ -151,24 +151,28 @@ def descargar_y_procesar_aemet(api_key, lat, lon):
         g = img_bgr[:, :, 1].astype(np.int16)
         r = img_bgr[:, :, 2].astype(np.int16)
         
-        # EL TRUCO MAESTRO: Detectar el rojo oscuro de las fronteras de AEMET
-        es_borde_rojo = (r > 50) & (r < 180) & (g < 50) & (b < 50)
+        # Filtro estricto: Todo el azul puro de AEMET (Lluvia) o alta saturación
+        es_lluvia = ((sat > 80) & (val > 80)) & ~((r > 50) & (r < 180) & (g < 50) & (b < 50))
         
-        # Solo cogemos la lluvia (alta saturación) EXCLUYENDO las fronteras
-        mascara_lluvia = (sat > 40) & (~es_borde_rojo)
+        # Máscara Circular (Solo procesamos dentro del alcance útil del radar)
+        # Suponiendo imagen de 480x480, centro en (240, 240) y radio de 225
+        y, x = np.ogrid[:img_bgr.shape[0], :img_bgr.shape[1]]
+        centro_y, centro_x = img_bgr.shape[0]//2, img_bgr.shape[1]//2
+        radio_maximo = min(centro_x, centro_y) - 15 
+        dist_al_centro = np.sqrt((x - centro_x)**2 + (y - centro_y)**2)
+        mascara_circular = dist_al_centro <= radio_maximo
         
-        # BLINDAJE: Impedir que el viento mueva el logo (arriba) y la barra de colores (abajo)
-        mascara_lluvia[:40, :] = False
-        mascara_lluvia[-80:, :] = False
+        # Aplicamos máscara doble: Solo colores de lluvia DENTRO del círculo
+        mascara_final = es_lluvia & mascara_circular
         
         reflectividad = np.zeros(sat.shape, dtype=np.float32)
-        reflectividad[mascara_lluvia] = (val[mascara_lluvia] / 255.0) * 60.0
+        reflectividad[mascara_final] = (val[mascara_final] / 255.0) * 60.0
         
-        # Creamos el lienzo de fondo con un "agujero negro" donde estaba la lluvia
+        # Fondo limpio (Solo el mapa, sin rastro de la lluvia vieja)
         mapa_limpio = img_bgr.copy()
-        mapa_limpio[mascara_lluvia] = [0, 0, 0] 
+        mapa_limpio[mascara_final] = [0, 0, 0] 
         
-        return reflectividad, mapa_limpio, f"Radar '{codigo_radar}' descargado con éxito."
+        return reflectividad, mapa_limpio, f"Radar '{codigo_radar}' descargado y calibrado con éxito."
         
     except Exception as e:
         return None, None, f"Error procesando AEMET: {str(e)}"
@@ -269,7 +273,7 @@ if 'radar_t0' in st.session_state:
     st.write("### ⏱️ Impacto Estimado (ETA)")
     st.markdown(f"> {st.session_state['eta_msg']}")
     
-    st.write("### 🌩️️ Evolución de la Tormenta")
+    st.write("### 🌩️ Evolución de la Tormenta")
     minuto_futuro = st.slider("Desliza para avanzar en el tiempo (minutos):", 0, 120, 0, step=5)
     
     radar_extrapolado = adveccion_retrograda(
@@ -282,14 +286,19 @@ if 'radar_t0' in st.session_state:
     if st.session_state.get('mapa_fondo') is not None:
         mapa_base = st.session_state['mapa_fondo'].copy()
         
-        # Filtramos para pintar solo lluvia significativa (más de 5 dBZ)
-        mascara_nueva = radar_extrapolado > 5.0
+        # Aplicamos la misma máscara circular al renderizado final
+        y, x = np.ogrid[:mapa_base.shape[0], :mapa_base.shape[1]]
+        cy, cx = mapa_base.shape[0]//2, mapa_base.shape[1]//2
+        rmax = min(cx, cy) - 15
+        en_circulo = np.sqrt((x - cx)**2 + (y - cy)**2) <= rmax
         
-        # Forzamos la escala de 0 a 60 dBZ para que los colores coincidan con AEMET
-        img_lluvia = np.clip((radar_extrapolado / 60.0) * 255, 0, 255).astype(np.uint8)
-        img_color = cv2.applyColorMap(img_lluvia, cv2.COLORMAP_JET)
+        # Pintamos la lluvia advectada SOLO dentro del radio del radar (> 5 dBZ)
+        mascara_nueva = (radar_extrapolado > 5.0) & en_circulo
         
-        # Pegar SOLO la lluvia movida encima de las fronteras (que ahora están fijas)
+        # Conversión a mapa de color JET
+        img_lluvia_gris = np.clip((radar_extrapolado / 60.0) * 255, 0, 255).astype(np.uint8)
+        img_color = cv2.applyColorMap(img_lluvia_gris, cv2.COLORMAP_JET)
+        
         mapa_base[mascara_nueva] = img_color[mascara_nueva]
         
         st.image(mapa_base, width=700, channels="BGR")
