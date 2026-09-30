@@ -9,6 +9,7 @@ import os
 import requests
 import tarfile
 import h5py
+import time
 
 # ==========================================
 # 1. MOTOR MATEMÁTICO Y CINEMÁTICO
@@ -267,42 +268,68 @@ if st.button("Ejecutar Nowcasting", type="primary", use_container_width=True):
         st.session_state['eta_msg'] = eta_msg
 
 # ==========================================
-# 4. VISUALIZACIÓN INTERACTIVA
+# 4. VISUALIZACIÓN INTERACTIVA Y ANIMACIÓN
 # ==========================================
 if 'radar_t0' in st.session_state:
     st.write("### ⏱️ Impacto Estimado (ETA)")
     st.markdown(f"> {st.session_state['eta_msg']}")
     
     st.write("### 🌩️ Evolución de la Tormenta")
-    minuto_futuro = st.slider("Desliza para avanzar en el tiempo (minutos):", 0, 120, 0, step=5)
     
-    radar_extrapolado = adveccion_retrograda(
-        st.session_state['radar_t0'], 
-        st.session_state['u_eff'], 
-        st.session_state['v_eff'], 
-        dt_segundos=minuto_futuro * 60.0
-    )
+    # Controles de la interfaz
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        minuto_futuro = st.slider("Control manual (minutos):", 0, 120, 0, step=5)
+    with col2:
+        velocidad = st.selectbox("Velocidad de animación:", ["Lenta", "Normal", "Rápida"], index=1)
+    with col3:
+        st.write("") # Espaciador para alinear el botón
+        animar = st.button("▶️ Reproducir / Animar", use_container_width=True)
     
-    if st.session_state.get('mapa_fondo') is not None:
-        mapa_base = st.session_state['mapa_fondo'].copy()
+    # El "lienzo" vacío donde pintaremos los fotogramas
+    marco_imagen = st.empty()
+    
+    # Función que renderiza un fotograma exacto (reutilizable)
+    def renderizar_fotograma(minutos):
+        radar_extrapolado = adveccion_retrograda(
+            st.session_state['radar_t0'], 
+            st.session_state['u_eff'], 
+            st.session_state['v_eff'], 
+            dt_segundos=minutos * 60.0
+        )
         
-        # Aplicamos la misma máscara circular al renderizado final
-        y, x = np.ogrid[:mapa_base.shape[0], :mapa_base.shape[1]]
-        cy, cx = mapa_base.shape[0]//2, mapa_base.shape[1]//2
-        rmax = min(cx, cy) - 15
-        en_circulo = np.sqrt((x - cx)**2 + (y - cy)**2) <= rmax
+        if st.session_state.get('mapa_fondo') is not None:
+            mapa_base = st.session_state['mapa_fondo'].copy()
+            y, x = np.ogrid[:mapa_base.shape[0], :mapa_base.shape[1]]
+            cy, cx = mapa_base.shape[0]//2, mapa_base.shape[1]//2
+            rmax = min(cx, cy) - 15
+            en_circulo = np.sqrt((x - cx)**2 + (y - cy)**2) <= rmax
+            
+            mascara_nueva = (radar_extrapolado > 5.0) & en_circulo
+            img_lluvia = np.clip((radar_extrapolado / 60.0) * 255, 0, 255).astype(np.uint8)
+            img_color = cv2.applyColorMap(img_lluvia, cv2.COLORMAP_JET)
+            
+            mapa_base[mascara_nueva] = img_color[mascara_nueva]
+            return mapa_base
+        else:
+            img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            return cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
+
+    # Lógica del reproductor
+    if animar:
+        # Asignamos los tiempos de pausa según la elección
+        tiempos_pausa = {"Lenta": 0.8, "Normal": 0.3, "Rápida": 0.05}
+        retardo = tiempos_pausa[velocidad]
         
-        # Pintamos la lluvia advectada SOLO dentro del radio del radar (> 5 dBZ)
-        mascara_nueva = (radar_extrapolado > 5.0) & en_circulo
-        
-        # Conversión a mapa de color JET
-        img_lluvia_gris = np.clip((radar_extrapolado / 60.0) * 255, 0, 255).astype(np.uint8)
-        img_color = cv2.applyColorMap(img_lluvia_gris, cv2.COLORMAP_JET)
-        
-        mapa_base[mascara_nueva] = img_color[mascara_nueva]
-        
-        st.image(mapa_base, width=700, channels="BGR")
+        # Bucle de animación (de 0 a 120 en saltos de 5)
+        for t in range(0, 125, 5):
+            img_frame = renderizar_fotograma(t)
+            # Sobreescribimos el mismo marco de imagen
+            marco_imagen.image(img_frame, width=700, channels="BGR", caption=f"Animación en curso: +{t} minutos")
+            time.sleep(retardo) # Espera antes del siguiente fotograma
+            
+        st.success("Animación finalizada.")
     else:
-        img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
-        st.image(img_color, width=700, channels="BGR")
+        # Modo estático (responde al slider manual)
+        img_frame = renderizar_fotograma(minuto_futuro)
+        marco_imagen.image(img_frame, width=700, channels="BGR", caption=f"Proyección estática a +{minuto_futuro} minutos")
