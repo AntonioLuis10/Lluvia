@@ -259,6 +259,7 @@ if 'radar_t0' in st.session_state:
     st.write("### 🌩️ Evolución de la Tormenta")
     minuto_futuro = st.slider("Desliza para avanzar en el tiempo (minutos):", 0, 120, 0, step=5)
     
+    # 1. Movemos matemáticamente solo la matriz de valores de lluvia
     radar_extrapolado = adveccion_retrograda(
         st.session_state['radar_t0'], 
         st.session_state['u_eff'], 
@@ -266,17 +267,25 @@ if 'radar_t0' in st.session_state:
         dt_segundos=minuto_futuro * 60.0
     )
     
-    # Composición de imagen inteligente
     if st.session_state.get('mapa_fondo') is not None:
-        mascara_nueva = radar_extrapolado > 1.0
+        # 2. Rescatamos el mapa original estático (sin lluvia)
+        mapa_base = st.session_state['mapa_fondo'].copy()
+        
+        # 3. Limpiamos las líneas rojas y letras movidas que se nos colaron antes
+        # Solo consideramos precipitación los píxeles con un valor real de lluvia (> 10 dBZ)
+        mascara_lluvia = radar_extrapolado > 10.0
+        
+        # 4. Coloreamos solo esos píxeles de lluvia pura usando la escala JET
         img_lluvia = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         img_color = cv2.applyColorMap(img_lluvia, cv2.COLORMAP_JET)
         
-        img_final = st.session_state['mapa_fondo'].copy()
-        img_final[mascara_nueva] = img_color[mascara_nueva]
+        # 5. Imprimimos la lluvia movida sobre el mapa base estático
+        # Solo sobreescribimos los píxeles donde la máscara indica que hay lluvia real
+        mapa_base[mascara_lluvia] = img_color[mascara_lluvia]
         
-        st.image(img_final, width=700, channels="BGR")
+        st.image(mapa_base, width=700, channels="BGR")
     else:
+        # Fallback para datos sintéticos
         img_radar = cv2.normalize(radar_extrapolado, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
         st.image(img_color, width=700, channels="BGR")
