@@ -276,17 +276,24 @@ if 'radar_t0' in st.session_state:
     
     st.write("### 🌩️ Evolución de la Tormenta")
     
-    # Inicializar variables del reproductor en memoria
-    if 'anim_slider' not in st.session_state:
-        st.session_state['anim_slider'] = 0
+    # 1. Variables de estado separadas para no chocar con el widget
+    if 'frame_actual' not in st.session_state:
+        st.session_state['frame_actual'] = 0
     if 'playing' not in st.session_state:
         st.session_state['playing'] = False
+
+    # 2. Función segura para cuando mueves el slider con el ratón
+    def actualizar_frame_manual():
+        st.session_state['frame_actual'] = st.session_state['mi_slider_ui']
 
     # Controles de la interfaz
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        # Al asociar el slider al "key", se moverá solo cuando cambie la memoria
-        st.slider("Minuto de proyección:", 0, 120, step=5, key='anim_slider')
+        # Le pasamos el 'frame_actual' y usamos on_change
+        st.slider("Minuto de proyección:", 0, 120, step=5, 
+                  value=st.session_state['frame_actual'], 
+                  key='mi_slider_ui',
+                  on_change=actualizar_frame_manual)
     with col2:
         velocidad = st.selectbox("Velocidad:", ["Lenta", "Normal", "Rápida"], index=1)
     with col3:
@@ -294,20 +301,20 @@ if 'radar_t0' in st.session_state:
         if st.session_state['playing']:
             if st.button("⏸️ Pausar", use_container_width=True):
                 st.session_state['playing'] = False
-                st.rerun() # Recarga la web inmediatamente para pausar
+                st.rerun() 
         else:
             if st.button("▶️ Reproducir", use_container_width=True):
-                if st.session_state['anim_slider'] >= 120:
-                    st.session_state['anim_slider'] = 0
+                if st.session_state['frame_actual'] >= 120:
+                    st.session_state['frame_actual'] = 0
                 st.session_state['playing'] = True
                 st.rerun()
 
-    # RENDERIZADO DEL MAPA EN EL MINUTO ACTUAL DEL SLIDER
+    # RENDERIZADO DEL MAPA USANDO 'frame_actual' EN VEZ DEL SLIDER DIRECTO
     radar_extrapolado = adveccion_retrograda(
         st.session_state['radar_t0'], 
         st.session_state['u_eff'], 
         st.session_state['v_eff'], 
-        dt_segundos=st.session_state['anim_slider'] * 60.0
+        dt_segundos=st.session_state['frame_actual'] * 60.0
     )
     
     if st.session_state.get('mapa_fondo') is not None:
@@ -327,17 +334,17 @@ if 'radar_t0' in st.session_state:
         img_color = cv2.applyColorMap(img_radar, cv2.COLORMAP_JET)
         st.image(img_color, width=700, channels="BGR")
 
-    # LÓGICA DE AVANCE AUTOMÁTICO (MOTOR DE ANIMACIÓN)
+    # LÓGICA DE AVANCE AUTOMÁTICO (ANIMACIÓN SEGURA)
     if st.session_state['playing']:
         import time
         tiempos = {"Lenta": 0.8, "Normal": 0.3, "Rápida": 0.05}
-        time.sleep(tiempos[velocidad]) # Espera los milisegundos elegidos
+        time.sleep(tiempos[velocidad]) 
         
-        next_t = st.session_state['anim_slider'] + 5
+        # Modificamos la variable independiente, no el widget
+        next_t = st.session_state['frame_actual'] + 5
         if next_t > 120:
-            st.session_state['playing'] = False # Si llega al final, se pausa solo
+            st.session_state['playing'] = False 
         else:
-            st.session_state['anim_slider'] = next_t
+            st.session_state['frame_actual'] = next_t
         
-        # Fuerzo a Streamlit a recargarse para pintar el siguiente fotograma
         st.rerun()
