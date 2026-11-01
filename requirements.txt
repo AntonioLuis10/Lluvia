@@ -1,8 +1,9 @@
 streamlit
 numpy
-opencv-python-headless
 scipy
+opencv-python-headless
 xarray
 netCDF4
 requests
-h5py
+Pillow
+tzdata
