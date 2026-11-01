@@ -165,6 +165,27 @@ def cargar_netcdf(archivo, var_name, res_km, dt_min, px, py):
     }
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def buscar_lugares(texto):
+    """Geocodificación de Open-Meteo: nombre -> lista de lugares."""
+    r = requests.get(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={"name": texto, "count": 8, "language": "es", "format": "json"},
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    return r.json().get("results") or []
+
+
+def etiqueta_lugar(p):
+    partes = [p.get("name"), p.get("admin2"), p.get("admin1"), p.get("country")]
+    vistos = []
+    for x in partes:
+        if x and x not in vistos:
+            vistos.append(x)
+    return ", ".join(vistos)
+
+
 def obtener_vientos_open_meteo(lat, lon):
     """Viento actual en 850/700/500 hPa y superficie (hourly, UTC)."""
     niveles = ["850hPa", "700hPa", "500hPa"]
@@ -334,7 +355,7 @@ st.set_page_config(page_title="Radar Nowcasting", layout="wide")
 st.title("⛈️ Predictor de Impacto de Precipitación")
 
 DEFAULTS = {
-    "lat": 39.47, "lon": -0.37,
+    "lat": 39.47, "lon": -0.37, "lugar": "Valencia (por defecto)",
     "u_850": 12.0, "v_850": 5.0, "u_700": 15.0, "v_700": 8.0,
     "u_500": 20.0, "v_500": 12.0, "u_shr": 18.0, "v_shr": 10.0,
 }
@@ -352,8 +373,25 @@ def _cb_viento():
 
 
 st.sidebar.header("1. Tu ubicación")
-lat_destino = st.sidebar.number_input("Latitud", key="lat", format="%.4f")
-lon_destino = st.sidebar.number_input("Longitud", key="lon", format="%.4f")
+consulta = st.sidebar.text_input("Buscar ciudad o pueblo", placeholder="p. ej. Mar de Pulpí")
+if len(consulta.strip()) >= 2:
+    error_busqueda = False
+    try:
+        lugares = buscar_lugares(consulta.strip())
+    except Exception as e:
+        lugares, error_busqueda = [], True
+        st.sidebar.error(f"Error en la búsqueda: {e}")
+    if lugares:
+        i = st.sidebar.selectbox(
+            "Resultados", range(len(lugares)),
+            format_func=lambda i: etiqueta_lugar(lugares[i]))
+        st.session_state["lat"] = float(lugares[i]["latitude"])
+        st.session_state["lon"] = float(lugares[i]["longitude"])
+        st.session_state["lugar"] = etiqueta_lugar(lugares[i])
+    elif not error_busqueda:
+        st.sidebar.warning("Sin resultados. Prueba con otro nombre.")
+lat_destino, lon_destino = st.session_state["lat"], st.session_state["lon"]
+st.sidebar.caption(f"📍 {st.session_state['lugar']} ({lat_destino:.4f}, {lon_destino:.4f})")
 
 st.sidebar.header("2. Viento (m/s: u→este, v→norte)")
 st.sidebar.button("🌐 Auto-completar viento (Open-Meteo)", type="primary", on_click=_cb_viento)
